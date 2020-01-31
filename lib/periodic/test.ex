@@ -13,28 +13,26 @@ defmodule Periodic.Test do
 
   @doc "Sends a tick signal to the given scheduler."
   @spec tick(GenServer.name()) :: :ok
-  def tick(pid_or_name), do: GenServer.call(pid_or_name, :tick)
+  def tick(pid_or_name, opts \\ []) do
+    with {:ok, {provider_state, value}} <- Keyword.fetch(opts, :provide),
+         do: Agent.cast(provider_state, fn nil -> value end)
+
+    GenServer.call(pid_or_name, :tick)
+  end
 
   @doc "Subscribes to telemetry events of the given scheduler."
   @spec observe(any) :: :ok
   def observe(telemetry_id),
     do: Enum.each(@telemetry_events, &attach_telemetry_handler(telemetry_id, &1))
 
-  def init_regular_condition() do
-    table = :ets.new(:condition, [:public])
+  def new_value_provider() do
+    {:ok, provider_state} = Agent.start_link(fn -> nil end)
 
-    fun = fn ->
-      res = :ets.lookup_element(table, :condition, 2)
-      :ets.delete(table, :condition)
-      res
+    provider_fun = fn ->
+      Agent.get_and_update(provider_state, fn state when not is_nil(state) -> {state, nil} end)
     end
 
-    {table, fun}
-  end
-
-  def next_regular_condition(table, value) do
-    true = :ets.insert(table, {:condition, value})
-    :ok
+    {provider_state, provider_fun}
   end
 
   @doc "Waits for the given telemetry event."
