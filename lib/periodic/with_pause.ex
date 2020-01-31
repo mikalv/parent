@@ -1,6 +1,16 @@
 defmodule Periodic.WithPause do
   use Periodic
 
+  @type opt :: {:duration, pos_integer} | {:initial_delay, non_neg_integer}
+
+  @spec child_spec([opt | Periodic.opt()]) :: Supervisor.child_spec()
+  def child_spec(opts) do
+    opts
+    |> super()
+    |> Supervisor.child_spec(id: Keyword.get(opts, :id, __MODULE__))
+  end
+
+  @spec start_link([opt | Periodic.opt()]) :: GenServer.on_start()
   def start_link(opts) do
     {opts, periodic_opts} = Keyword.split(opts, ~w/duration initial_delay/a)
     duration = Keyword.fetch!(opts, :duration)

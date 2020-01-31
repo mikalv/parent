@@ -293,7 +293,7 @@ defmodule Parent.GenServer do
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts, behaviour: __MODULE__] do
       use GenServer, opts
-      @behaviour behaviour
+      @behaviour Parent.GenServer
 
       @doc """
       Returns a specification to start this module under a supervisor.

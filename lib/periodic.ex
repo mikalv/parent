@@ -532,7 +532,7 @@ defmodule Periodic do
   defmacro __using__(opts) do
     quote location: :keep, bind_quoted: [opts: opts, behaviour: __MODULE__] do
       use Parent.GenServer, opts
-      @behaviour behaviour
+      @behaviour Periodic
 
       @impl behaviour
       def handle_job_terminated(_pid, _reason, state), do: {:noreply, state}

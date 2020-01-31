@@ -11,8 +11,11 @@ defmodule Periodic.Test do
                       do: public_telemetry_events,
                       else: [:next_tick | public_telemetry_events]
 
+  @opaque provider_state :: pid
+  @opaque provider_fun :: (() -> any)
+
   @doc "Sends a tick signal to the given scheduler."
-  @spec tick(GenServer.name()) :: :ok
+  @spec tick(GenServer.name(), provide: {provider_state, value :: any}) :: :ok
   def tick(pid_or_name, opts \\ []) do
     with {:ok, {provider_state, value}} <- Keyword.fetch(opts, :provide),
          do: Agent.cast(provider_state, fn nil -> value end)
@@ -25,6 +28,8 @@ defmodule Periodic.Test do
   def observe(telemetry_id),
     do: Enum.each(@telemetry_events, &attach_telemetry_handler(telemetry_id, &1))
 
+  @doc "Creates the new value provider."
+  @spec new_value_provider() :: {provider_state, provider_fun}
   def new_value_provider() do
     {:ok, provider_state} = Agent.start_link(fn -> nil end)
 

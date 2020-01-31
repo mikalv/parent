@@ -1,4 +1,31 @@
 defmodule Periodic.Fixed do
+  @type opt ::
+          {:precision, pos_integer}
+          | {:now, (() -> DateTime.t())}
+          | {:when, filter}
+
+  @type filter :: %{
+          optional(:second) => filter(Calendar.second()),
+          optional(:minute) => filter(Calendar.minute()),
+          optional(:hour) => filter(Calendar.hour()),
+          optional(:day_of_week) => filter(day_of_week),
+          optional(:day) => filter(Calendar.day()),
+          optional(:month) => filter(Calendar.month()),
+          optional(:year) => filter(Calendar.year())
+        }
+
+  @type day_of_week ::
+          :monday
+          | :tuesday
+          | :wednesday
+          | :thursday
+          | :friday
+          | :saturday
+          | :sunday
+
+  @type filter(type) :: expected_value :: type | (type -> boolean)
+
+  @spec child_spec([opt | Periodic.opt()]) :: Supervisor.child_spec()
   def child_spec(opts) do
     %{
       id: Keyword.get(opts, :id, __MODULE__),
@@ -7,6 +34,7 @@ defmodule Periodic.Fixed do
     }
   end
 
+  @spec start_link([opt | Periodic.opt()]) :: GenServer.on_start()
   def start_link(opts) do
     {opts, periodic_opts} = Keyword.split(opts, ~w/when precision now/a)
 
