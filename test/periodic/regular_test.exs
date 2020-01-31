@@ -41,6 +41,19 @@ defmodule Periodic.RegularTest do
     assert_periodic_event(:test_job, :started, %{scheduler: ^scheduler})
   end
 
+  test "executes the job only if the condition is met" do
+    {condition_state, condition_fun} = init_regular_condition()
+    scheduler = start_scheduler!(when: condition_fun)
+
+    next_regular_condition(condition_state, false)
+    tick(scheduler)
+    refute_periodic_event(:test_job, :started, %{scheduler: ^scheduler})
+
+    next_regular_condition(condition_state, true)
+    tick(scheduler)
+    assert_periodic_event(:test_job, :started, %{scheduler: ^scheduler})
+  end
+
   defp start_scheduler!(opts),
     do: Periodic.TestHelper.start_scheduler!(Keyword.put(opts, :module, Periodic.Regular))
 

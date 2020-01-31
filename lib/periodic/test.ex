@@ -20,6 +20,23 @@ defmodule Periodic.Test do
   def observe(telemetry_id),
     do: Enum.each(@telemetry_events, &attach_telemetry_handler(telemetry_id, &1))
 
+  def init_regular_condition() do
+    table = :ets.new(:condition, [:public])
+
+    fun = fn ->
+      res = :ets.lookup_element(table, :condition, 2)
+      :ets.delete(table, :condition)
+      res
+    end
+
+    {table, fun}
+  end
+
+  def next_regular_condition(table, value) do
+    true = :ets.insert(table, {:condition, value})
+    :ok
+  end
+
   @doc "Waits for the given telemetry event."
   defmacro assert_periodic_event(
              telemetry_id,
