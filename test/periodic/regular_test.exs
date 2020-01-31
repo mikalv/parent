@@ -42,13 +42,14 @@ defmodule Periodic.RegularTest do
   end
 
   test "executes the job only if the condition is met" do
-    {provider_state, condition_fun} = new_value_provider()
-    scheduler = start_scheduler!(when: condition_fun)
+    scheduler = start_scheduler!(when: &{&1, &1})
 
-    tick(scheduler, provide: {provider_state, false})
+    Periodic.Regular.set_when_state(scheduler, false)
+    tick(scheduler)
     refute_periodic_event(:test_job, :started, %{scheduler: ^scheduler})
 
-    tick(scheduler, provide: {provider_state, true})
+    Periodic.Regular.set_when_state(scheduler, true)
+    tick(scheduler)
     assert_periodic_event(:test_job, :started, %{scheduler: ^scheduler})
   end
 

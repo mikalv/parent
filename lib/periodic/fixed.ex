@@ -1,8 +1,7 @@
 defmodule Periodic.Fixed do
-  @type opt ::
-          {:precision, pos_integer}
-          | {:now, (() -> DateTime.t())}
-          | {:when, filter}
+  @type opt :: {:precision, pos_integer} | {:now, now_fun} | {:when, filter}
+
+  @type now_fun :: (() -> DateTime.t())
 
   @type filter :: %{
           optional(:second) => filter(Calendar.second()),
@@ -41,16 +40,21 @@ defmodule Periodic.Fixed do
     periodic_opts
     |> Keyword.merge(
       every: Keyword.get(opts, :precision, :timer.seconds(1)),
-      when: condition_fun(opts)
+      when: condition_fun(opts),
+      when_state: Keyword.get(opts, :now, fn -> DateTime.utc_now() end)
     )
     |> Periodic.Regular.start_link()
   end
 
+  @spec set_now_fun(GenServer.on_start(), now_fun) :: :ok
+  def set_now_fun(server, now_fun), do: Periodic.Regular.set_when_state(server, now_fun)
+
   defp condition_fun(opts) do
-    now_fun = Keyword.get(opts, :now, fn -> DateTime.utc_now() end)
     filters = normalize_filter(Keyword.fetch!(opts, :when))
 
-    fn -> matches_any_filter?(now_fun.(), filters) end
+    fn now_fun ->
+      {matches_any_filter?(now_fun.(), filters), now_fun}
+    end
   end
 
   defp normalize_filter(filter) when is_list(filter), do: filter

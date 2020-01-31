@@ -11,34 +11,14 @@ defmodule Periodic.Test do
                       do: public_telemetry_events,
                       else: [:next_tick | public_telemetry_events]
 
-  @opaque provider_state :: pid
-  @opaque provider_fun :: (() -> any)
-
   @doc "Sends a tick signal to the given scheduler."
-  @spec tick(GenServer.name(), provide: {provider_state, value :: any}) :: :ok
-  def tick(pid_or_name, opts \\ []) do
-    with {:ok, {provider_state, value}} <- Keyword.fetch(opts, :provide),
-         do: Agent.cast(provider_state, fn nil -> value end)
-
-    GenServer.call(pid_or_name, :tick)
-  end
+  @spec tick(GenServer.name()) :: :ok
+  def tick(pid_or_name), do: GenServer.call(pid_or_name, :tick)
 
   @doc "Subscribes to telemetry events of the given scheduler."
   @spec observe(any) :: :ok
   def observe(telemetry_id),
     do: Enum.each(@telemetry_events, &attach_telemetry_handler(telemetry_id, &1))
-
-  @doc "Creates the new value provider."
-  @spec new_value_provider() :: {provider_state, provider_fun}
-  def new_value_provider() do
-    {:ok, provider_state} = Agent.start_link(fn -> nil end)
-
-    provider_fun = fn ->
-      Agent.get_and_update(provider_state, fn state when not is_nil(state) -> {state, nil} end)
-    end
-
-    {provider_state, provider_fun}
-  end
 
   @doc "Waits for the given telemetry event."
   defmacro assert_periodic_event(
