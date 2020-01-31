@@ -309,60 +309,154 @@ defmodule Periodic do
   use Parent.GenServer
   require Logger
 
-  @type opts :: [
-          id: term,
-          name: GenServer.name(),
-          telemetry_id: term,
-          mode: :auto | :manual,
-          every: pos_integer,
-          initial_delay: non_neg_integer,
-          run: job_spec,
-          delay_mode: :regular | :shifted,
-          on_overlap: :run | :ignore | :stop_previous,
-          timeout: pos_integer | :infinity,
-          job_shutdown: :brutal_kill | :infinity | non_neg_integer()
-        ]
-  @type job_spec :: (() -> term) | {module, atom, [term]}
+  @type opt ::
+          {:id, term}
+          | {:name, GenServer.name()}
+          | {:telemetry_id, term}
+          | {:mode, :auto | :manual}
+          | {:run, (() -> term) | {module, atom, [term]}}
+          | {:on_overlap, :run | :ignore | :stop_previous}
+          | {:timeout, pos_integer | :infinity}
+          | {:job_shutdown, :brutal_kill | :infinity | non_neg_integer()}
 
-  @doc "Starts the periodic executor."
-  @spec start_link(opts) :: GenServer.on_start()
-  def start_link(opts) do
+  @type state :: any
+
+  @doc "Invoked on tick."
+  @callback handle_tick(state) ::
+              {:noreply, new_state}
+              | {:noreply, new_state, timeout | :hibernate}
+              | {:stop, reason :: term, new_state}
+            when new_state: state
+
+  @doc "Invoked when job process has terminated."
+  @callback handle_job_terminated(pid, reason :: term, state) ::
+              {:noreply, new_state}
+              | {:noreply, new_state, timeout | :hibernate}
+              | {:stop, reason :: term, new_state}
+            when new_state: state
+
+  @doc "Starts the new Periodic process."
+  @spec start_link(module, any, name: GenServer.name()) :: GenServer.on_start()
+  def start_link(callback, arg, opts) do
     gen_server_opts = Keyword.take(opts, [:name])
-    Parent.GenServer.start_link(__MODULE__, Map.new(opts), gen_server_opts)
+    Parent.GenServer.start_link(__MODULE__, {callback, arg, Map.new(opts)}, gen_server_opts)
   end
 
-  @doc "Builds a child specification for starting the periodic executor."
-  @spec child_spec(opts) :: Supervisor.child_spec()
+  @doc false
+  @deprecated "Use Periodic.Regular or Periodic.WithPause"
+  def start_link(opts) do
+    Logger.warn(
+      "Periodic.start_link/1 is deprecated. Use Periodic.Regular or Periodic.WithPause instead."
+    )
+
+    case Keyword.get(opts, :delay_mode, :regular) do
+      :regular ->
+        Periodic.Regular.start_link(opts)
+
+      :shifted ->
+        {duration, opts} = Keyword.pop(opts, :every)
+        Periodic.WithPause.start_link(Keyword.put(opts, :duration, duration))
+    end
+  end
+
+  @doc false
+  @deprecated "Use Periodic.Regular or Periodic.WithPause"
   def child_spec(opts) do
     opts
     |> super()
     |> Supervisor.child_spec(id: Keyword.get(opts, :id, __MODULE__))
   end
 
-  @impl GenServer
-  def init(opts) do
-    state = Map.merge(defaults(), opts)
-    {initial_delay, state} = Map.pop(state, :initial_delay, state.every)
-    enqueue_next_tick(state, initial_delay)
-    {:ok, state}
+  @doc """
+  When invoked by the callback, enqueues the next tick after the given time (in milliseconds).
+
+  The option `:now` can be used to provide the expected current monotonic time in milliseconds
+  resolution. If not provided, the value of `:erlang.monotonic_time(:millisecond)` is used.
+  """
+  @spec enqueue_tick(non_neg_integer, now: integer) :: :ok
+  def enqueue_tick(time, enqueue_opts \\ []) do
+    opts = opts()
+    telemetry(opts, :next_tick, %{in: time})
+
+    if opts.mode == :auto do
+      now = Keyword.get_lazy(enqueue_opts, :now, fn -> :erlang.monotonic_time(:millisecond) end)
+      Process.send_after(self(), {__MODULE__, :tick}, now + time, abs: true)
+    end
+
+    :ok
+  end
+
+  @doc "When invoked by the callback, starts the job as the child process of the scheduler."
+  @spec start_job() :: :ok
+  def start_job() do
+    opts = opts()
+
+    case opts.on_overlap do
+      :run ->
+        start_job(opts)
+
+      :ignore ->
+        case previous_instance() do
+          {:ok, _id, pid} -> telemetry(opts, :skipped, %{still_running: pid})
+          :error -> start_job(opts)
+        end
+
+      :stop_previous ->
+        with {:ok, id, pid} <- previous_instance() do
+          Process.exit(pid, :kill)
+          Parent.GenServer.await_child_termination(id, :infinity)
+          telemetry(opts, :stopped_previous, %{pid: pid})
+        end
+
+        start_job(opts)
+    end
+
+    :ok
   end
 
   @impl GenServer
-  def handle_info({:tick, expected_now}, state) do
-    handle_tick(state, now: expected_now)
-    {:noreply, state}
+  def init({callback, arg, opts}) do
+    Process.put({__MODULE__, :callback}, callback)
+    Process.put({__MODULE__, :opts}, Map.merge(defaults(), opts))
+    callback.init(arg)
+  end
+
+  unless Version.compare(System.version(), "1.7.0") == :lt do
+    @impl GenServer
+    def handle_continue(continue, state), do: invoke_callback(:handle_continue, [continue, state])
   end
 
   @impl GenServer
-  def handle_call(:tick, _from, %{mode: :manual} = state) do
-    handle_tick(state)
-    {:reply, :ok, state}
+  def handle_call(:tick, from, state) do
+    :manual = opts().mode
+    res = invoke_callback(:handle_tick, [state])
+    GenServer.reply(from, :ok)
+    res
   end
+
+  def handle_call(message, from, state), do: invoke_callback(:handle_call, [message, from, state])
+
+  @impl GenServer
+  def handle_cast(message, state), do: invoke_callback(:handle_cast, [message, state])
+
+  @impl GenServer
+  def handle_info({__MODULE__, :tick}, state), do: invoke_callback(:handle_tick, [state])
+
+  def handle_info(message, state), do: invoke_callback(:handle_info, [message, state])
+
+  @impl GenServer
+  def format_status(:terminate, pdict_and_state),
+    do: invoke_callback(:format_status, [:terminate, pdict_and_state])
+
+  @impl GenServer
+  def code_change(old_vsn, state, extra),
+    do: invoke_callback(:code_change, [old_vsn, state, extra])
+
+  @impl GenServer
+  def terminate(reason, state), do: invoke_callback(:terminate, [reason, state])
 
   @impl Parent.GenServer
-  def handle_child_terminated(_id, meta, pid, reason, state) do
-    if state.delay_mode == :shifted, do: enqueue_next_tick(state, state.every)
-
+  def handle_child_terminated({__MODULE__, :job, _id}, meta, pid, reason, state) do
     duration =
       :erlang.convert_time_unit(
         :erlang.monotonic_time() - meta.started_at,
@@ -370,91 +464,80 @@ defmodule Periodic do
         :microsecond
       )
 
-    telemetry(state, :finished, %{job: pid, reason: reason}, %{time: duration})
-    {:noreply, state}
+    telemetry(opts(), :finished, %{job: pid, reason: reason}, %{time: duration})
+
+    invoke_callback(:handle_job_terminated, [pid, reason, state])
   end
+
+  def handle_child_terminated(id, meta, pid, reason, state),
+    do: invoke_callback(:handle_child_terminated, [id, meta, pid, reason, state])
+
+  defp opts(), do: Process.get({__MODULE__, :opts})
 
   defp defaults() do
     %{
       telemetry_id: nil,
       mode: :auto,
-      delay_mode: :regular,
       on_overlap: :run,
       timeout: :infinity,
       job_shutdown: :timer.seconds(5)
     }
   end
 
-  defp handle_tick(state, opts \\ []) do
-    if state.delay_mode == :regular, do: enqueue_next_tick(state, state.every, opts)
-
-    case state.on_overlap do
-      :run ->
-        start_job(state)
-
-      :ignore ->
-        case previous_instance() do
-          {:ok, pid} -> telemetry(state, :skipped, %{still_running: pid})
-          :error -> start_job(state)
-        end
-
-      :stop_previous ->
-        with {:ok, pid} <- previous_instance() do
-          Parent.GenServer.shutdown_all(:kill)
-          telemetry(state, :stopped_previous, %{pid: pid})
-        end
-
-        start_job(state)
-    end
-  end
-
   defp previous_instance() do
-    case Parent.GenServer.children() do
-      [{_id, pid, _meta}] -> {:ok, pid}
+    case Enum.filter(
+           Parent.GenServer.children(),
+           &match?({{__MODULE__, :job, _id}, _pid, _meta}, &1)
+         ) do
+      [{id, pid, _meta}] -> {:ok, id, pid}
       [] -> :error
     end
   end
 
-  defp start_job(state) do
-    job = state.run
-
+  defp start_job(opts) do
     with {:ok, pid} <-
            Parent.GenServer.start_child(%{
-             id: make_ref(),
-             start: {Task, :start_link, [fn -> invoke_job(job) end]},
-             timeout: state.timeout,
-             shutdown: state.job_shutdown,
+             id: {__MODULE__, :job, make_ref()},
+             start: {Task, :start_link, [fn -> invoke_job(opts.run) end]},
+             timeout: opts.timeout,
+             shutdown: opts.job_shutdown,
              meta: %{started_at: :erlang.monotonic_time()}
            }),
-         do: telemetry(state, :started, %{job: pid})
+         do: telemetry(opts, :started, %{job: pid})
   end
 
   defp invoke_job({mod, fun, args}), do: apply(mod, fun, args)
   defp invoke_job(fun) when is_function(fun, 0), do: fun.()
 
-  defp enqueue_next_tick(state, delay, opts \\ []) do
-    telemetry(state, :next_tick, %{in: delay})
-
-    if state.mode == :auto do
-      now = Keyword.get_lazy(opts, :now, fn -> :erlang.monotonic_time(:millisecond) end)
-      next_tick_abs_time = now + delay
-      Process.send_after(self(), {:tick, next_tick_abs_time}, next_tick_abs_time, abs: true)
-    end
-  end
-
-  defp telemetry(state, event, data, measurements \\ %{})
+  defp telemetry(opts, event, data, measurements \\ %{})
 
   if Mix.env() != :test do
-    defp telemetry(_state, :next_tick, _data, _measurements), do: :ok
+    defp telemetry(_opts, :next_tick, _data, _measurements), do: :ok
   end
 
   defp telemetry(%{telemetry_id: nil}, _event, _data, _measurements), do: :ok
 
-  defp telemetry(state, event, data, measurements) do
+  defp telemetry(opts, event, data, measurements) do
     :telemetry.execute(
-      [__MODULE__, state.telemetry_id, event],
+      [__MODULE__, opts.telemetry_id, event],
       measurements,
       Map.merge(data, %{scheduler: self()})
     )
+  end
+
+  defp invoke_callback(fun, args),
+    do: apply(Process.get({__MODULE__, :callback}), fun, args)
+
+  @doc false
+  defmacro __using__(opts) do
+    quote location: :keep, bind_quoted: [opts: opts, behaviour: __MODULE__] do
+      use Parent.GenServer, opts
+      @behaviour behaviour
+
+      @impl behaviour
+      def handle_job_terminated(_pid, _reason, state), do: {:noreply, state}
+
+      defoverridable handle_job_terminated: 3
+    end
   end
 end

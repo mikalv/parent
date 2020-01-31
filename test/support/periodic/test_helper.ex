@@ -13,7 +13,9 @@ defmodule Periodic.TestHelper do
       run: instrumented_job(job_opts)
     ]
 
-    ExUnit.Callbacks.start_supervised!({Periodic, Keyword.merge(defaults, opts)})
+    module = Keyword.get(opts, :module, Periodic.Regular)
+
+    ExUnit.Callbacks.start_supervised!({module, Keyword.merge(defaults, opts)})
   end
 
   def start_job!(opts \\ []) do

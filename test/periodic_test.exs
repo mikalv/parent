@@ -7,11 +7,20 @@ defmodule PeriodicTest do
     observe(:test_job)
   end
 
-  test "auto mode" do
-    test_pid = self()
-    Periodic.start_link(every: 1, run: fn -> send(test_pid, :started) end)
-    assert_receive :started
-    assert_receive :started
+  describe "auto mode" do
+    test "regular" do
+      test_pid = self()
+      start_supervised({Periodic.Regular, every: 1, run: fn -> send(test_pid, :started) end})
+      assert_receive :started
+      assert_receive :started
+    end
+
+    test "with pause" do
+      test_pid = self()
+      start_supervised({Periodic.WithPause, duration: 1, run: fn -> send(test_pid, :started) end})
+      assert_receive :started
+      assert_receive :started
+    end
   end
 
   test "regular job execution" do
@@ -37,31 +46,6 @@ defmodule PeriodicTest do
     assert is_integer(time) and time > 0
   end
 
-  describe "on_overlap" do
-    test "ignore" do
-      {scheduler, job} = start_job!(on_overlap: :ignore)
-
-      tick(scheduler)
-      assert_periodic_event(:test_job, :skipped, %{scheduler: ^scheduler, still_running: ^job})
-      refute_periodic_event(:test_job, :started, %{scheduler: ^scheduler})
-
-      finish_job(job)
-      tick(scheduler)
-      assert_periodic_event(:test_job, :started, %{scheduler: ^scheduler, job: job})
-    end
-
-    test "stop_previous" do
-      {scheduler, job} = start_job!(on_overlap: :stop_previous)
-
-      mref = Process.monitor(job)
-
-      tick(scheduler)
-      assert_receive({:DOWN, ^mref, :process, ^job, :killed})
-      assert_periodic_event(:test_job, :stopped_previous, %{scheduler: ^scheduler, pid: ^job})
-      assert_periodic_event(:test_job, :started, %{scheduler: ^scheduler})
-    end
-  end
-
   test "timeout" do
     {_scheduler, job} = start_job!(timeout: 1)
     mref = Process.monitor(job)
@@ -79,31 +63,6 @@ defmodule PeriodicTest do
       assert_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler, in: 0})
 
       tick(scheduler)
-      assert_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler, in: 100})
-    end
-  end
-
-  describe "delay_mode" do
-    test "regular" do
-      scheduler = start_scheduler!(delay_mode: :regular, every: 100)
-      assert_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler, in: 100})
-
-      tick(scheduler)
-      assert_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler, in: 100})
-
-      tick(scheduler)
-      assert_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler, in: 100})
-    end
-
-    test "shifted" do
-      scheduler = start_scheduler!(delay_mode: :shifted, every: 100)
-      assert_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler, in: 100})
-
-      tick(scheduler)
-      assert_periodic_event(:test_job, :started, %{scheduler: ^scheduler, job: job})
-      refute_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler})
-
-      finish_job(job)
       assert_periodic_event(:test_job, :next_tick, %{scheduler: ^scheduler, in: 100})
     end
   end
